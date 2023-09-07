@@ -34,7 +34,7 @@ class SqliteQuery(RelQuery):
         else:
             cols = column + ""
         
-        self.waiting.append("ORDER BY {cols} {mode}\n".format(
+        self.waiting.insert(0, "ORDER BY {cols} {mode}\n".format(
             cols=cols,
             mode="DESC" if descending else "ASC"
         ))

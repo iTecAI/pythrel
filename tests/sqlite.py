@@ -34,4 +34,4 @@ def main():
     db.query().insert("products", list(PRODUCTS.values())).execute()
     db.commit()
 
-    print(db.query().select("customers", ["customerName", "favorite_number", "quantity"]).join("products", "inner", "customers.id = products.customer").where("products.quantity > 40").order("quantity").execute())
+    print(db.query().select("customers", ["customerName", "favorite_number", "quantity"], limit=10).join("products", "inner", "customers.id = products.customer").where("products.quantity > 40").order("quantity").execute())
