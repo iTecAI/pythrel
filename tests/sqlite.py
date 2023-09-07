@@ -1,7 +1,12 @@
-from pythrel.adapters.sqlite import SqliteDatabase
+from pythrel import SqliteDatabase, Pythrel, Record
 import secrets
 import random
 import os
+
+class Customer(Record):
+    id: int
+    customerName: str
+    favorite_number: float
 
 def main():
     try:
@@ -34,4 +39,11 @@ def main():
     db.query().insert("products", list(PRODUCTS.values())).execute()
     db.commit()
 
-    print(db.query().select("customers", ["customerName", "favorite_number", "quantity"], limit=10).join("products", "inner", "customers.id = products.customer").where("products.quantity > 40").order("quantity").execute())
+    orm = Pythrel(db)
+    print(orm.load_columns(Customer, "customers", "*")[0].dict())
+    orm.create(Customer, "customers", id=-10, customerName="John", favorite_number=-69)
+    john = orm.load_columns(Customer, "customers", "*", where="id < 0")[0]
+    print(john)
+    john.favorite_number = 1000
+    orm.save(john, key="id")
+    print(orm.load_query(Customer, orm.query().select("customers", "*").where("id < 0"))[0])

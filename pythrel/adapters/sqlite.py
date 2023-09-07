@@ -54,7 +54,10 @@ class SqliteQuery(RelQuery):
     def update(self, table: str, data: dict[str, Any]) -> "SqliteQuery":
         self.query += "UPDATE {table} SET {values}\n".format(
             table=table,
-            values=", ".join([f"{k} = {v}" for k, v in data.items()])
+            values=", ".join(["{k} = {v}".format(
+                k=k,
+                v="'" + v + "'" if type(v) == str else v
+            ) for k, v in data.items()])
         )
         return self
     
