@@ -1,62 +1,132 @@
-from typing import Any
+from sqlite3 import Connection, Cursor
+from typing import Any, Literal, Union
+
+from pythrel.database import RelQuery
+from ..database import RelDatabase, RelQuery
 from typing_extensions import TypedDict
-
-from ..base import AbstractDatabase, TableColumn
-import sqlite3
-
 
 class SqliteOptions(TypedDict):
     path: str
 
-
-class SqliteDatabase(AbstractDatabase):
-    def __init__(self, connection_options: SqliteOptions = {}) -> None:
-        self.connection: sqlite3.Connection
-        super().__init__(connection_options)
-
-    def connect(self, options: SqliteOptions) -> sqlite3.Connection:
-        return sqlite3.connect(options["path"])
+class SqliteQuery(RelQuery):
+    def select(self, table: str, columns: list[str] | Literal['*'], distinct: bool = False, limit: int = None, into: str = None) -> "SqliteQuery":
+        self.query += "SELECT {distinct}{cols}{into} FROM {table}\n".format(
+            cols="*" if columns == "*" else ", ".join(columns),
+            table=table,
+            distinct=" DISTINCT" if distinct else "",
+            into=f"INTO {into}" if into else ""
+        )
+        if limit != None:
+            self.waiting.append(f"LIMIT {limit}")
+        return self
     
-    def query(self, query: str) -> list[dict]:
-        cur = self.connection.cursor()
-        result = cur.execute(query)
-        return [{d[0]: v for d, v in zip(result.description, i)} for i in result.fetchall()]
+    def where(self, condition: str) -> "SqliteQuery":
+        self.query += f"WHERE {condition}\n"
+        return self
+    
+    def having(self, condition: str) -> "SqliteQuery":
+        self.query += f"HAVING {condition}\n"
+        return self
+    
+    def order(self, column: Union[str, list[str]], descending: bool = False) -> "SqliteQuery":
+        if type(column) == list:
+            cols = ", ".join(column)
+        else:
+            cols = column + ""
+        
+        self.waiting.insert(0, "ORDER BY {cols} {mode}\n".format(
+            cols=cols,
+            mode="DESC" if descending else "ASC"
+        ))
+        return self
+    
+    def insert(self, table: str, data: Union[list[dict[str, Any]], dict[str, Any]]) -> "SqliteQuery":
+        if type(data) == list:
+            col_names = list(data[0].keys())
+            values = ", ".join(["(" + ", ".join([f"'{record[col]}'" if type(str(record.get(col, "NULL"))) == str and col in record.keys() else str(record.get(col, "NULL")) for col in col_names]) + ")" for record in data])
+        else:
+            col_names = list(data.keys())
+            values = "(" + ", ".join([f"'{data[c]}'" if type(data[c]) == str else str(data[c]) for c in col_names]) + ")"
+
+        self.query += f"INSERT INTO {table} ({', '.join([str(c) for c in col_names])}) VALUES {values}\n"
+        return self
+    
+    def update(self, table: str, data: dict[str, Any]) -> "SqliteQuery":
+        self.query += "UPDATE {table} SET {values}\n".format(
+            table=table,
+            values=", ".join(["{k} = {v}".format(
+                k=k,
+                v="'" + v + "'" if type(v) == str else v
+            ) for k, v in data.items()])
+        )
+        return self
+    
+    def delete(self, table: str) -> "SqliteQuery":
+        self.query += f"DELETE FROM {table}\n"
+        return self
+    
+    def join(self, table: str, mode: Literal['inner', 'left', 'right', 'full'], on: str) -> "SqliteQuery":
+        self.query += "{mode} JOIN {table} ON {on}\n".format(
+            mode=mode.upper(),
+            table=table,
+            on=on
+        )
+        return self
+
+class SqliteDatabase(RelDatabase):
+    def __init__(self, connection_args: dict = SqliteOptions) -> None:
+        super().__init__(connection_args)
+        self.connection: Connection = None
+        self.cursor: Cursor = None
+
+    def execute(self, query: str, commit: bool = False) -> list[dict[str, Any]]:
+        if not self.connection:
+            self.connection = Connection(self.connection_args["path"])
+        if not self.cursor:
+            self.cursor = self.connection.cursor()
+        
+        result = self.cursor.execute(query)
+        description = result.description
+        results = result.fetchall()
+        if commit:
+            self.connection.commit()
+            self.cursor.close()
+            self.connection.close()
+            self.connection = None
+            self.cursor = None
+        
+        return [{description[v][0]: i[v] for v in range(len(i))} for i in results]
+    
+    def commit(self) -> None:
+        if self.connection and self.cursor:
+            self.connection.commit()
+            self.cursor.close()
+            self.connection.close()
+            self.connection = None
+            self.cursor = None
+
+    def rollback(self) -> None:
+        if self.connection and self.cursor:
+            self.connection.rollback()
+            self.cursor.close()
+            self.connection.close()
+            self.connection = None
+            self.cursor = None
     
     def exists(self, table: str) -> bool:
-        return len(self.query(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table}';")) > 0
+        return len(self.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table}'")) > 0
     
-    def create_table(self, name: str, columns: list[tuple[str, str]] = [], if_exists: str = "ignore"):
+    def query(self) -> SqliteQuery:
+        return SqliteQuery(self)
+    
+    def create_table(self, name: str, columns: dict[str, str], exist_ok: bool = True, commit: bool = False) -> None:
         if self.exists(name):
-            if if_exists == "error":
-                raise sqlite3.OperationalError
-            return
-        
-        self.query("CREATE TABLE {name} ({columns})".format(
-            name=name,
-            columns=", ".join([c[0] + " " + c[1] if len(c) == 2 else c[0] for c in columns])
-        ))
-
-    def info(self, table: str) -> list[TableColumn]:
-        columns = self.query(f"PRAGMA table_info({table});")
-        return [TableColumn(
-            index=col["cid"],
-            name=col["name"],
-            type=col["type"],
-            not_null=bool(col["notnull"]),
-            default_value=col["dflt_value"],
-            primary_key=bool(col["pk"])
-        ) for col in sorted(columns, key=lambda c: c["cid"])]
+            if not exist_ok:
+                raise RuntimeError("Table exists")
+        else:
+            self.execute("CREATE TABLE {name} ({columns});".format(
+                name=name,
+                columns=", ".join(f"{k} {v}" for k, v in columns.items())
+            ), commit=commit)
     
-    def insert(self, table: str, data: dict[str, Any]):
-        table_info = self.info(table)
-        values = ["'" + data[i["name"]] + "'" if type(data[i["name"]]) == str else str(data[i["name"]]) if i["name"] in data.keys() else i["default_value"] for i in table_info]
-        self.query("INSERT INTO {table} ({columns}) VALUES({values});".format(
-            table=table,
-            columns=", ".join([c["name"] for c in table_info]),
-            values=", ".join(values)
-        ))
-        self.connection.commit()
-        self.connection.close()
-        self.connection = sqlite3.Connection(self.connection_options["path"])
 
-    
