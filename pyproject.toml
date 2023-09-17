@@ -1,9 +1,11 @@
 [tool.poetry]
 name = "pythrel"
 version = "0.1.0"
-description = ""
+description = "Simple SQL ORM with support for several DB providers"
 authors = ["Dax Harris <matteovh@gmail.com>"]
 readme = "README.md"
+license = "MIT"
+repository = "https://github.com/iTecAI/pythrel"
 
 [tool.poetry.dependencies]
 python = "^3.11"
