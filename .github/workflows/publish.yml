@@ -1,4 +1,6 @@
-on: release
+on: 
+  - workflow_dispatch
+  - release
 name: PUBLISH
 
 jobs:
