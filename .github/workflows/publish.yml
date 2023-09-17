@@ -26,4 +26,4 @@ jobs:
       - name: Install the project dependencies
         run: poetry install
       - name: Publish to pypi
-        run: poetry publish -u ${{ secrets.PYPI_USERNAME }} -p ${{ secrets.PYPI_PASSWORD }} --build --dry-run
+        run: poetry publish -u ${{ secrets.PYPI_USERNAME }} -p ${{ secrets.PYPI_PASSWORD }} --build
