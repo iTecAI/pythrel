@@ -1,15 +1,20 @@
-from sqlite3 import Connection, Cursor
-from typing import Any, Literal, Union
+from typing import Any, Literal, Union, Optional
+from psycopg import Connection, connect, Cursor
+from urllib.parse import quote
 
 from pythrel.database import RelQuery
 from ..database import RelDatabase, RelQuery
 from typing_extensions import TypedDict
 
-class SqliteOptions(TypedDict):
-    path: str
+class PostgresOptions(TypedDict):
+    host: str
+    port: Optional[int]
+    username: str
+    password: Optional[str]
+    database: str
 
-class SqliteQuery(RelQuery):
-    def select(self, table: str, columns: list[str] | Literal['*'], distinct: bool = False, limit: int = None, into: str = None) -> "SqliteQuery":
+class PostgresQuery(RelQuery):
+    def select(self, table: str, columns: list[str] | Literal['*'], distinct: bool = False, limit: int = None, into: str = None) -> "PostgresQuery":
         self.query += "SELECT {distinct}{cols}{into} FROM {table}\n".format(
             cols="*" if columns == "*" else ", ".join(columns),
             table=table,
@@ -20,15 +25,15 @@ class SqliteQuery(RelQuery):
             self.waiting.append(f"LIMIT {limit}")
         return self
     
-    def where(self, condition: str) -> "SqliteQuery":
+    def where(self, condition: str) -> "PostgresQuery":
         self.query += f"WHERE {condition}\n"
         return self
     
-    def having(self, condition: str) -> "SqliteQuery":
+    def having(self, condition: str) -> "PostgresQuery":
         self.query += f"HAVING {condition}\n"
         return self
     
-    def order(self, column: Union[str, list[str]], descending: bool = False) -> "SqliteQuery":
+    def order(self, column: Union[str, list[str]], descending: bool = False) -> "PostgresQuery":
         if type(column) == list:
             cols = ", ".join(column)
         else:
@@ -40,7 +45,7 @@ class SqliteQuery(RelQuery):
         ))
         return self
     
-    def insert(self, table: str, data: Union[list[dict[str, Any]], dict[str, Any]]) -> "SqliteQuery":
+    def insert(self, table: str, data: Union[list[dict[str, Any]], dict[str, Any]]) -> "PostgresQuery":
         if type(data) == list:
             col_names = list(data[0].keys())
             values = ", ".join(["(" + ", ".join([f"'{record[col]}'" if type(str(record.get(col, "NULL"))) == str and col in record.keys() else str(record.get(col, "NULL")) for col in col_names]) + ")" for record in data])
@@ -51,7 +56,7 @@ class SqliteQuery(RelQuery):
         self.query += f"INSERT INTO {table} ({', '.join([str(c) for c in col_names])}) VALUES {values}\n"
         return self
     
-    def update(self, table: str, data: dict[str, Any]) -> "SqliteQuery":
+    def update(self, table: str, data: dict[str, Any]) -> "PostgresQuery":
         self.query += "UPDATE {table} SET {values}\n".format(
             table=table,
             values=", ".join(["{k} = {v}".format(
@@ -61,11 +66,11 @@ class SqliteQuery(RelQuery):
         )
         return self
     
-    def delete(self, table: str) -> "SqliteQuery":
+    def delete(self, table: str) -> "PostgresQuery":
         self.query += f"DELETE FROM {table}\n"
         return self
     
-    def join(self, table: str, mode: Literal['inner', 'left', 'right', 'full'], on: str) -> "SqliteQuery":
+    def join(self, table: str, mode: Literal['inner', 'left', 'right', 'full'], on: str) -> "PostgresQuery":
         self.query += "{mode} JOIN {table} ON {on}\n".format(
             mode=mode.upper(),
             table=table,
@@ -73,51 +78,38 @@ class SqliteQuery(RelQuery):
         )
         return self
 
-class SqliteDatabase(RelDatabase):
-    def __init__(self, **connection_args: SqliteOptions) -> None:
+class PostgresDatabase(RelDatabase):
+    def __init__(self, **connection_args: PostgresOptions) -> None:
         super().__init__(connection_args)
-        self.connection: Connection = None
-        self.cursor: Cursor = None
+        self.connection: Connection = connect("postgresql://{user}{password}@{host}:{port}/{db}".format(
+            user=connection_args["username"],
+            password=":" + quote(connection_args["password"]) if "password" in connection_args.keys() else "",
+            host=connection_args["host"],
+            port=str(connection_args.get("port", 5432)),
+            db=connection_args["database"]
+        ))
+        self.cursor: Cursor = self.connection.cursor()
 
     def execute(self, query: str, commit: bool = False) -> list[dict[str, Any]]:
-        if not self.connection:
-            self.connection = Connection(self.connection_args["path"])
-        if not self.cursor:
-            self.cursor = self.connection.cursor()
-        
         result = self.cursor.execute(query)
         description = result.description
-        results = result.fetchall()
+        results = result.fetchall() if description else []
         if commit:
-            self.connection.commit()
-            self.cursor.close()
-            self.connection.close()
-            self.connection = None
-            self.cursor = None
+            self.commit()
         
         return [{description[v][0]: i[v] for v in range(len(i))} for i in results]
     
     def commit(self) -> None:
-        if self.connection and self.cursor:
-            self.connection.commit()
-            self.cursor.close()
-            self.connection.close()
-            self.connection = None
-            self.cursor = None
+        self.connection.commit()
 
     def rollback(self) -> None:
-        if self.connection and self.cursor:
-            self.connection.rollback()
-            self.cursor.close()
-            self.connection.close()
-            self.connection = None
-            self.cursor = None
+        self.connection.rollback()
     
     def exists(self, table: str) -> bool:
-        return len(self.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table}'")) > 0
+        return len(self.execute(f"SELECT tablename FROM pg_tables WHERE tablename='{table}'")) > 0
     
-    def query(self) -> SqliteQuery:
-        return SqliteQuery(self)
+    def query(self) -> PostgresQuery:
+        return PostgresQuery(self)
     
     def create_table(self, name: str, columns: dict[str, str], exist_ok: bool = True, commit: bool = False) -> None:
         if self.exists(name):
@@ -128,5 +120,10 @@ class SqliteDatabase(RelDatabase):
                 name=name,
                 columns=", ".join(f"{k} {v}" for k, v in columns.items())
             ), commit=commit)
+
+    def close(self, commit: bool = True):
+        if commit:
+            self.connection.commit()
+        self.connection.close()
     
 
